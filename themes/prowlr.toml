@@ -1,0 +1,13 @@
+name = "prowlr"
+background = "#000000"
+foreground = "#ffffff"
+border = "#ff6ac1"
+accent = "#00eaff"
+title = "#ff6ac1"
+
+[severity]
+critical = "#ff2d55"
+high     = "#ff9500"
+medium   = "#ffd60a"
+low      = "#30d158"
+info     = "#8e8e93"

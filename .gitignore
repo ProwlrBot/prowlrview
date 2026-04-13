@@ -1,0 +1,9 @@
+bin/
+dist/
+*.log
+*.snapshot
+*.jsonl.tmp
+.idea/
+.vscode/
+.DS_Store
+coverage.out

@@ -1,0 +1,13 @@
+name = "cyberpunk"
+background = "#000000"
+foreground = "#f6f8fa"
+border = "#ff00a0"
+accent = "#00ffff"
+title = "#fcee0c"
+
+[severity]
+critical = "#ff003c"
+high     = "#ff6c11"
+medium   = "#fcee0c"
+low      = "#00ff9f"
+info     = "#7a7a7a"
