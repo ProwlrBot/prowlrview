@@ -1,0 +1,1 @@
+/home/anon/prowlrview-plugins/categories/passive-scan/secret-sniffer/main.lua

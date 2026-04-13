@@ -118,6 +118,7 @@ func (h *Host) Fire(event string, payload map[string]any) {
 }
 
 func (h *Host) injectAPI(L *lua.LState) {
+	L.SetGlobal("plugin", L.NewTable())
 	register := func(event string) lua.LGFunction {
 		return func(L *lua.LState) int {
 			fn := L.CheckFunction(1)
