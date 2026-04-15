@@ -1,4 +1,38 @@
-# prowlrview plugin API (draft, v0.3 target)
+# prowlrview plugin API (v0.2 — proxy live)
+
+## Quick start
+
+```sh
+prowlrview init                # enable all plugins + themes
+prowlrview proxy :8888         # start MITM, fires on_request/on_response
+# trust ~/.config/prowlrview/ca.crt in your browser/system to MITM HTTPS
+```
+
+## Request / Response objects (real, in v0.2)
+
+```lua
+-- on_request callback receives a `req` table
+on_request(function(req)
+  -- fields:  req.method, req.host, req.path, req.url, req.headers
+  -- methods: req:header(k), req:set_header(k,v), req:body(),
+  --          req:replace_body(s), req:block(reason)
+  if req.path:find("/admin") then req:block("admin path") end
+end)
+
+-- on_response callback receives a `resp` table
+on_response(function(resp)
+  -- fields:  resp.status, resp.url, resp.headers, resp.body
+  -- methods: resp:header(k), resp:body(), resp:matches(pattern)
+  if resp:matches("BEGIN RSA PRIVATE KEY") then
+    notify("leaked private key on " .. resp.url)
+  end
+end)
+```
+
+Out-of-scope or blocked requests short-circuit with a synthetic 403.
+
+---
+
 
 Two runtimes, same event surface:
 

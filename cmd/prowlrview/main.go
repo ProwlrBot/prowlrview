@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/ProwlrBot/prowlrview/internal/plugin"
+	"github.com/ProwlrBot/prowlrview/internal/proxy"
 	"github.com/ProwlrBot/prowlrview/internal/ui"
 )
 
@@ -29,7 +30,10 @@ func usage() {
 	fmt.Println("    prowlrview replay SNAP.jsonl     replay a saved graph snapshot")
 	fmt.Println("    prowlrview plugin <cmd> ...      list|enable|disable|enable-all|disable-all|sync")
 	fmt.Println("    prowlrview theme <cmd> ...       list|enable|enable-all")
-	fmt.Println("    prowlrview proxy [:port]         MITM proxy (planned)")
+	fmt.Println("    prowlrview proxy [:port]         MITM proxy → fires plugin on_request/on_response")
+	fmt.Println("    prowlrview ca [show|install|export DEST]   show / install / export the MITM CA cert")
+	fmt.Println("    prowlrview chrome [URL]          launch isolated Chrome through the proxy")
+	fmt.Println("    prowlrview web [:webPort] [:proxyPort]   proxy + beautiful live dashboard")
 	fmt.Println("    prowlrview version")
 	fmt.Println()
 	fmt.Println("  KEYS (in TUI):")
@@ -61,8 +65,49 @@ func main() {
 	case "theme":
 		runPlugin("theme", os.Args[2:])
 	case "proxy":
-		fmt.Fprintln(os.Stderr, "proxy mode: planned for v0.2 (goproxy-based MITM)")
-		os.Exit(2)
+		addr := ":8888"
+		if len(os.Args) > 2 {
+			addr = os.Args[2]
+		}
+		if _, err := proxy.EnsureCA(); err != nil {
+			die(err)
+		}
+		if err := ui.RunProxy(addr, ""); err != nil {
+			die(err)
+		}
+	case "web":
+		paddr, waddr := ":8888", ":8889"
+		if len(os.Args) > 2 {
+			waddr = os.Args[2]
+		}
+		if len(os.Args) > 3 {
+			paddr = os.Args[3]
+		}
+		if _, err := proxy.EnsureCA(); err != nil {
+			die(err)
+		}
+		if err := ui.RunProxy(paddr, waddr); err != nil {
+			die(err)
+		}
+	case "ca":
+		runCA(os.Args[2:])
+	case "chrome":
+		// usage: prowlrview chrome [proxyAddr] [url]
+		// accepts args in any order: ":9888", "https://...", or both.
+		proxyAddr, url := ":8888", ""
+		for _, a := range os.Args[2:] {
+			if strings.HasPrefix(a, ":") || strings.Contains(a, "127.0.0.1:") || strings.Contains(a, "localhost:") {
+				proxyAddr = a
+			} else {
+				url = a
+			}
+		}
+		if _, err := proxy.EnsureCA(); err != nil {
+			die(err)
+		}
+		if err := proxy.LaunchChrome(proxyAddr, url); err != nil {
+			die(err)
+		}
 	case "version", "-v", "--version":
 		fmt.Println("prowlrview", version)
 	case "help", "-h", "--help":
@@ -189,6 +234,44 @@ func toggleAll(kind string, enable bool) {
 		verb = "disabled"
 	}
 	fmt.Printf("✓ %s %d %ss\n", verb, n, kind)
+}
+
+func runCA(args []string) {
+	cmd := "show"
+	if len(args) > 0 {
+		cmd = args[0]
+	}
+	switch cmd {
+	case "show", "path":
+		p, err := proxy.EnsureCA()
+		if err != nil {
+			die(err)
+		}
+		fmt.Println(p)
+	case "install", "info":
+		p, err := proxy.EnsureCA()
+		if err != nil {
+			die(err)
+		}
+		fmt.Print(proxy.Instructions(p))
+	case "export":
+		dest := ""
+		if len(args) > 1 {
+			dest = args[1]
+		} else {
+			dest = "win:Downloads"
+		}
+		out, err := proxy.ExportTo(dest)
+		if err != nil {
+			die(err)
+		}
+		fmt.Println("✓ exported CA to", out)
+		fmt.Println("  Windows: double-click → Install Certificate → Local Machine → Trusted Root")
+	default:
+		fmt.Fprintln(os.Stderr, "ca: unknown subcommand:", cmd)
+		fmt.Fprintln(os.Stderr, "usage: prowlrview ca [show|install|export DEST]")
+		os.Exit(2)
+	}
 }
 
 func need(n int, msg string) {

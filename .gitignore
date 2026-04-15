@@ -1,5 +1,7 @@
 bin/
 dist/
+/plugin-check
+/prowlrview
 *.log
 *.snapshot
 *.jsonl.tmp

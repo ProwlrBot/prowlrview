@@ -5,6 +5,7 @@ package plugin
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,6 +28,7 @@ type Host struct {
 type plugin struct {
 	name string
 	path string
+	mu   sync.Mutex // serializes access to L; a single LState is not goroutine-safe
 	L    *lua.LState
 }
 
@@ -77,6 +79,7 @@ func (h *Host) LoadFile(path string) error {
 			return err
 		}
 	}
+	registerTypes(L)
 	h.injectAPI(L)
 	if err := L.DoFile(path); err != nil {
 		L.Close()
@@ -102,11 +105,11 @@ func (h *Host) Close() {
 // Fire calls the given event callback on every plugin that registered it.
 // payload is copied into a Lua table.
 func (h *Host) Fire(event string, payload map[string]any) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	for _, p := range h.plugins {
+	for _, p := range h.snapshot() {
+		p.mu.Lock()
 		cb := p.L.GetGlobal("__pv_" + event)
 		if cb.Type() != lua.LTFunction {
+			p.mu.Unlock()
 			continue
 		}
 		p.L.SetMx(maxInstructions / 1000)
@@ -114,7 +117,79 @@ func (h *Host) Fire(event string, payload map[string]any) {
 		if err := p.L.CallByParam(lua.P{Fn: cb, NRet: 0, Protect: true}, tbl); err != nil {
 			h.log(fmt.Sprintf("%s:%s error: %v", p.name, event, err))
 		}
+		p.mu.Unlock()
 	}
+}
+
+// snapshot returns the current plugin slice under the host lock so callers can
+// iterate without holding it during long Lua executions.
+func (h *Host) snapshot() []*plugin {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]*plugin, len(h.plugins))
+	copy(out, h.plugins)
+	return out
+}
+
+// FireRequest dispatches an HTTP request through every plugin's on_request
+// callback. Returns the (possibly mutated) Request struct so callers can
+// inspect Blocked / Reason and use the modified r.R.
+func (h *Host) FireRequest(r *http.Request) *Request {
+	var out *Request
+	for _, p := range h.snapshot() {
+		p.mu.Lock()
+		cb := p.L.GetGlobal("__pv_on_request")
+		if cb.Type() != lua.LTFunction {
+			p.mu.Unlock()
+			continue
+		}
+		p.L.SetMx(maxInstructions / 1000)
+		tbl, req := pushRequest(p.L, r)
+		if out == nil {
+			out = req
+		}
+		err := p.L.CallByParam(lua.P{Fn: cb, NRet: 0, Protect: true}, tbl)
+		p.mu.Unlock()
+		if err != nil {
+			h.log(fmt.Sprintf("%s:on_request error: %v", p.name, err))
+			continue
+		}
+		if req.Blocked {
+			out = req
+			return out
+		}
+	}
+	if out == nil {
+		out = &Request{R: r}
+	}
+	return out
+}
+
+// FireResponse dispatches an HTTP response through every plugin's on_response.
+func (h *Host) FireResponse(resp *http.Response) *Response {
+	var out *Response
+	for _, p := range h.snapshot() {
+		p.mu.Lock()
+		cb := p.L.GetGlobal("__pv_on_response")
+		if cb.Type() != lua.LTFunction {
+			p.mu.Unlock()
+			continue
+		}
+		p.L.SetMx(maxInstructions / 1000)
+		tbl, rs := pushResponse(p.L, resp)
+		if out == nil {
+			out = rs
+		}
+		err := p.L.CallByParam(lua.P{Fn: cb, NRet: 0, Protect: true}, tbl)
+		p.mu.Unlock()
+		if err != nil {
+			h.log(fmt.Sprintf("%s:on_response error: %v", p.name, err))
+		}
+	}
+	if out == nil {
+		out = &Response{R: resp}
+	}
+	return out
 }
 
 func (h *Host) injectAPI(L *lua.LState) {
@@ -142,9 +217,17 @@ func (h *Host) injectAPI(L *lua.LState) {
 	}))
 
 	graphTbl := L.NewTable()
+	// shift if called with colon syntax (graph:tag → first arg is the table)
+	shift := func(L *lua.LState) int {
+		if L.Get(1).Type() == lua.LTTable {
+			return 1
+		}
+		return 0
+	}
 	L.SetField(graphTbl, "tag", L.NewFunction(func(L *lua.LState) int {
-		id := L.CheckString(1)
-		tag := L.CheckString(2)
+		s := shift(L)
+		id := L.CheckString(1 + s)
+		tag := L.CheckString(2 + s)
 		if n, ok := h.g.Get(id); ok {
 			h.g.Upsert(graph.Node{ID: n.ID, Kind: n.Kind, Label: n.Label, Parent: n.Parent,
 				Severity: n.Severity, Source: n.Source, Tags: []string{tag}})
@@ -152,19 +235,21 @@ func (h *Host) injectAPI(L *lua.LState) {
 		return 0
 	}))
 	L.SetField(graphTbl, "upsert", L.NewFunction(func(L *lua.LState) int {
+		s := shift(L)
 		h.g.Upsert(graph.Node{
-			ID:       L.CheckString(1),
-			Kind:     L.CheckString(2),
-			Label:    L.CheckString(3),
-			Parent:   L.OptString(4, ""),
-			Severity: graph.ParseSeverity(L.OptString(5, "info")),
+			ID:       L.CheckString(1 + s),
+			Kind:     L.CheckString(2 + s),
+			Label:    L.CheckString(3 + s),
+			Parent:   L.OptString(4+s, ""),
+			Severity: graph.ParseSeverity(L.OptString(5+s, "info")),
 			Source:   "plugin",
 		})
 		return 0
 	}))
 	L.SetField(graphTbl, "raise", L.NewFunction(func(L *lua.LState) int {
-		id := L.CheckString(1)
-		sev := graph.ParseSeverity(L.CheckString(2))
+		s := shift(L)
+		id := L.CheckString(1 + s)
+		sev := graph.ParseSeverity(L.CheckString(2 + s))
 		if n, ok := h.g.Get(id); ok {
 			h.g.Upsert(graph.Node{ID: n.ID, Kind: n.Kind, Label: n.Label, Parent: n.Parent,
 				Severity: sev, Source: n.Source})

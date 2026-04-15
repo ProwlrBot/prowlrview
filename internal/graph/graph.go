@@ -166,6 +166,44 @@ func (g *Graph) Findings() []*Node {
 	return out
 }
 
+// Nodes returns a snapshot of every node, severity-sorted.
+func (g *Graph) Nodes() []*Node {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	out := make([]*Node, 0, len(g.nodes))
+	for _, n := range g.nodes {
+		out = append(out, n)
+	}
+	sortNodes(out)
+	return out
+}
+
+// PruneKind caps nodes of the given kind to keep (most recently seen).
+// Findings (severity >= medium) are preserved regardless. Returns removed count.
+func (g *Graph) PruneKind(kind string, keep int) int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if keep < 0 {
+		keep = 0
+	}
+	var victims []*Node
+	for _, n := range g.nodes {
+		if n.Kind == kind && n.Severity < SevMedium {
+			victims = append(victims, n)
+		}
+	}
+	if len(victims) <= keep {
+		return 0
+	}
+	sort.Slice(victims, func(i, j int) bool { return victims[i].SeenAt.After(victims[j].SeenAt) })
+	removed := 0
+	for _, n := range victims[keep:] {
+		delete(g.nodes, n.ID)
+		removed++
+	}
+	return removed
+}
+
 func (g *Graph) Len() int {
 	g.mu.RLock()
 	defer g.mu.RUnlock()

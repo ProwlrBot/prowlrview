@@ -15,6 +15,7 @@ import (
 	"github.com/ProwlrBot/prowlrview/internal/adapter"
 	"github.com/ProwlrBot/prowlrview/internal/graph"
 	"github.com/ProwlrBot/prowlrview/internal/plugin"
+	"github.com/ProwlrBot/prowlrview/internal/proxy"
 	"github.com/ProwlrBot/prowlrview/internal/theme"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -69,6 +70,33 @@ func RunPipe(r io.Reader) error {
 func RunWatch(dir string) error {
 	a := newApp()
 	go a.ingestDir(dir)
+	go a.refreshLoop()
+	go a.tickLoop()
+	defer a.plugin.Close()
+	return a.tv.Run()
+}
+
+// RunProxy starts the MITM proxy on addr and renders flows live in the TUI.
+// If webAddr != "", also serves the HTML dashboard on that port.
+func RunProxy(addr, webAddr string) error {
+	a := newApp()
+	a.setStatus("proxy on " + addr + " · point browser at 127.0.0.1" + addr + " · ? for keys")
+	var store *proxy.FlowStore
+	if webAddr != "" {
+		store = proxy.NewFlowStore(2000)
+		go func() {
+			if err := proxy.ServeWeb(webAddr, a.g, store, func(s string) { a.logf("%s", s) }); err != nil {
+				a.logf("web: %v", err)
+			}
+		}()
+		a.logf("web dashboard: http://127.0.0.1%s", webAddr)
+	}
+	go func() {
+		err := proxy.Run(addr, a.g, a.plugin, store, func(s string) { a.logf("%s", s) })
+		if err != nil {
+			a.logf("proxy: %v", err)
+		}
+	}()
 	go a.refreshLoop()
 	go a.tickLoop()
 	defer a.plugin.Close()
