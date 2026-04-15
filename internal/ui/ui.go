@@ -41,6 +41,7 @@ type app struct {
 	names   []string
 	tree    *tview.TreeView
 	findTbl *tview.Table
+	flowTbl *tview.Table
 	detail  *tview.TextView
 	status  *tview.TextView
 	logView *tview.TextView
@@ -49,6 +50,7 @@ type app struct {
 	pages   *tview.Pages
 
 	plugin *plugin.Host
+	store  *proxy.FlowStore
 
 	mu     sync.Mutex
 	filter string
@@ -80,19 +82,19 @@ func RunWatch(dir string) error {
 // If webAddr != "", also serves the HTML dashboard on that port.
 func RunProxy(addr, webAddr string) error {
 	a := newApp()
+	a.store = proxy.NewFlowStore(2000)
+	a.attachFlowPane()
 	a.setStatus("proxy on " + addr + " · point browser at 127.0.0.1" + addr + " · ? for keys")
-	var store *proxy.FlowStore
 	if webAddr != "" {
-		store = proxy.NewFlowStore(2000)
 		go func() {
-			if err := proxy.ServeWeb(webAddr, a.g, store, func(s string) { a.logf("%s", s) }); err != nil {
+			if err := proxy.ServeWeb(webAddr, a.g, a.store, func(s string) { a.logf("%s", s) }); err != nil {
 				a.logf("web: %v", err)
 			}
 		}()
 		a.logf("web dashboard: http://127.0.0.1%s", webAddr)
 	}
 	go func() {
-		err := proxy.Run(addr, a.g, a.plugin, store, func(s string) { a.logf("%s", s) })
+		err := proxy.Run(addr, a.g, a.plugin, a.store, func(s string) { a.logf("%s", s) })
 		if err != nil {
 			a.logf("proxy: %v", err)
 		}
@@ -432,6 +434,105 @@ func (a *app) refresh() {
 	}
 	if a.follow && a.findTbl.GetRowCount() > 1 {
 		a.findTbl.Select(1, 0)
+	}
+
+	if a.flowTbl != nil && a.store != nil {
+		a.refreshFlows(filter)
+	}
+}
+
+func (a *app) attachFlowPane() {
+	t := a.theme
+	a.flowTbl = tview.NewTable().SetBorders(false).SetSelectable(true, false).SetFixed(1, 0)
+	a.flowTbl.SetBorder(true).SetTitle(" ⇌ flows ").SetBorderColor(t.Border).SetTitleColor(t.Title)
+
+	// swap right column: detail(2) · flows(2) · log(1)
+	right := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(a.detail, 0, 2, false).
+		AddItem(a.flowTbl, 0, 2, false).
+		AddItem(a.logView, 0, 1, false)
+
+	left := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(a.tree, 0, 2, true).
+		AddItem(a.findTbl, 0, 1, false)
+
+	main := tview.NewFlex().SetDirection(tview.FlexColumn).
+		AddItem(left, 0, 1, true).
+		AddItem(right, 0, 2, false)
+
+	a.root.Clear().
+		AddItem(a.banner(), 6, 0, false).
+		AddItem(main, 0, 1, true).
+		AddItem(a.filterI, 1, 0, false).
+		AddItem(a.status, 1, 0, false)
+}
+
+func (a *app) refreshFlows(filter string) {
+	flows := a.store.Snapshot()
+	a.flowTbl.Clear()
+	headers := []string{"time", "method", "status", "dur", "host", "path"}
+	for i, h := range headers {
+		a.flowTbl.SetCell(0, i, tview.NewTableCell("[::b]"+h).SetSelectable(false).SetTextColor(a.theme.Accent))
+	}
+	// newest first
+	row := 1
+	for i := len(flows) - 1; i >= 0; i-- {
+		f := flows[i]
+		if filter != "" && !strings.Contains(strings.ToLower(f.Host+f.Path+f.Method), filter) {
+			continue
+		}
+		a.flowTbl.SetCell(row, 0, tview.NewTableCell(f.Time.Format("15:04:05")))
+		a.flowTbl.SetCell(row, 1, tview.NewTableCell(f.Method).SetTextColor(methodColor(f.Method)))
+		statusStr := fmt.Sprintf("%d", f.Status)
+		if f.Blocked {
+			statusStr = "BLK"
+		}
+		a.flowTbl.SetCell(row, 2, tview.NewTableCell(statusStr).SetTextColor(statusColor(f.Status, f.Blocked)))
+		a.flowTbl.SetCell(row, 3, tview.NewTableCell(fmt.Sprintf("%dms", f.DurMs)))
+		a.flowTbl.SetCell(row, 4, tview.NewTableCell(truncate(f.Host, 30)))
+		a.flowTbl.SetCell(row, 5, tview.NewTableCell(truncate(f.Path, 60)))
+		row++
+		if row > 400 {
+			break
+		}
+	}
+	if a.follow && row > 1 {
+		a.flowTbl.Select(1, 0)
+	}
+}
+
+func methodColor(m string) tcell.Color {
+	switch m {
+	case "GET":
+		return tcell.ColorLightGreen
+	case "POST":
+		return tcell.ColorGold
+	case "PUT", "PATCH":
+		return tcell.ColorOrange
+	case "DELETE":
+		return tcell.ColorRed
+	case "HEAD", "OPTIONS":
+		return tcell.ColorGray
+	default:
+		return tcell.ColorWhite
+	}
+}
+
+func statusColor(s int, blocked bool) tcell.Color {
+	if blocked {
+		return tcell.ColorRed
+	}
+	switch {
+	case s >= 500:
+		return tcell.ColorRed
+	case s >= 400:
+		return tcell.ColorGold
+	case s >= 300:
+		return tcell.ColorAqua
+	case s >= 200:
+		return tcell.ColorLightGreen
+	default:
+		return tcell.ColorGray
 	}
 }
 
