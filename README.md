@@ -73,6 +73,10 @@ TOML themes in `~/.config/prowlrview/themes/`. Ships with: `prowlr`, `paper`, `m
 go build -o prowlrview ./cmd/prowlrview
 ```
 
+## Security
+
+Report suspected vulnerabilities privately — see [SECURITY.md](SECURITY.md).
+
 ## License
 
 MIT © kdairatchi / ProwlrBot
