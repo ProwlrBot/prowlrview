@@ -56,7 +56,7 @@ end)
 
 ## Themes
 
-TOML themes in `~/.config/prowlrview/themes/`. Ships with: `prowlr`, `cyberpunk`, `dracula`, `nightshade`, `solarized`.
+TOML themes in `~/.config/prowlrview/themes/`. Ships with: `prowlr`, `paper`, `mono`, `terminal`, `solarized`.
 
 ## Roadmap
 
