@@ -98,7 +98,9 @@ func RunProxy(addr, webAddr string) error {
 	go a.plugin.Watch(ctx)
 	a.store = proxy.NewFlowStore(2000)
 	a.attachFlowPane()
-	a.setStatus("proxy on " + addr + " · point browser at 127.0.0.1" + addr + " · ? for keys")
+	// Direct write — app not yet running, QueueUpdateDraw would deadlock
+	c := colorTag(a.theme.Accent)
+	a.status.SetText(fmt.Sprintf(" %sprowlrview[-] · proxy on %s · point browser at 127.0.0.1%s · ? for keys", c, addr, addr))
 	if webAddr != "" {
 		go func() {
 			if err := proxy.ServeWeb(webAddr, a.g, a.store, func(s string) { a.logf("%s", s) }); err != nil {
@@ -644,7 +646,10 @@ func (a *app) sevColor(s graph.Severity) tcell.Color {
 
 func (a *app) setStatus(s string) {
 	c := colorTag(a.theme.Accent)
-	a.status.SetText(fmt.Sprintf(" %sprowlrview[-] · %s", c, s))
+	text := fmt.Sprintf(" %sprowlrview[-] · %s", c, s)
+	a.tv.QueueUpdateDraw(func() {
+		a.status.SetText(text)
+	})
 }
 
 func (a *app) notify(s string) {
@@ -654,7 +659,10 @@ func (a *app) notify(s string) {
 
 func (a *app) logf(format string, args ...any) {
 	ts := time.Now().Format("15:04:05")
-	fmt.Fprintf(a.logView, "[gray]%s[-] %s\n", ts, fmt.Sprintf(format, args...))
+	line := fmt.Sprintf("[gray]%s[-] %s\n", ts, fmt.Sprintf(format, args...))
+	a.tv.QueueUpdateDraw(func() {
+		fmt.Fprint(a.logView, line)
+	})
 }
 
 func (a *app) ingestReader(r io.Reader) {
