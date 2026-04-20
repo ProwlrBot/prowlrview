@@ -5,15 +5,18 @@ Thanks for your interest. prowlrview is the core TUI/proxy/graph engine. For **p
 ## Scope of this repo
 
 - Core TUI (tview)
-- Adapters for tool output (nuclei, httpx, subfinder, katana, flaw, SARIF, …)
+- Adapters for tool output (nuclei, httpx, subfinder, katana, flaw, dalfox, gau, waybackurls, SARIF, …)
 - Graph data structure
 - MITM proxy engine
 - Lua + WASM plugin host
+- Recon pipeline runner
+- Session management
+- Caido import/export bridge
 - Theme engine
 
 ## Scope of the plugins repo
 
-- Per-vuln-class detectors (IDOR, SSRF, JWT, …)
+- Per-vuln-class detectors (IDOR, SSRF, JWT, CORS, XSS, …)
 - Passive scanners
 - Graph decorators
 - Scope guards
@@ -32,13 +35,15 @@ go test ./...
 
 ## Commit style
 
-Short, imperative, lowercase prefix: `ui:`, `adapter:`, `graph:`, `plugin:`, `proxy:`, `docs:`.
+Short, imperative, lowercase prefix: `ui:`, `adapter:`, `graph:`, `plugin:`, `proxy:`, `runner:`, `session:`, `caido:`, `wasm:`, `docs:`.
 
 ## Adding an adapter
 
 1. Add detection in `internal/adapter/adapter.go` `detect()`.
-2. Add `fromFoo` parser.
+2. Add a `fromFoo` parser. Use `fromURL()` shared helper for tools that emit bare URL strings.
 3. Add a test case to `internal/adapter/adapter_test.go`.
+
+Adapters currently supported: nuclei, httpx, subfinder, katana, flaw, dalfox, gau, waybackurls, SARIF, generic `{id, label}` fallback.
 
 ## Style
 

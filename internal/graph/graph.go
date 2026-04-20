@@ -55,22 +55,34 @@ func ParseSeverity(s string) Severity {
 
 // Node is one entity in the attack surface graph.
 type Node struct {
-	ID       string            // canonical key (host, host+path, etc.)
-	Kind     string            // host | path | endpoint | finding | asset
-	Label    string            // display string
-	Parent   string            // parent node ID ("" for roots)
-	Severity Severity          // worst severity observed on this node
-	Tags     []string          // plugin-applied tags
-	Source   string            // which adapter emitted it (nuclei, httpx, flaw, ...)
-	Detail   map[string]string // free-form metadata
-	SeenAt   time.Time
-	Hits     int
+	ID         string            // canonical key (host, host+path, etc.)
+	Kind       string            // host | path | endpoint | finding | asset
+	Label      string            // display string
+	Parent     string            // parent node ID ("" for roots)
+	Severity   Severity          // worst severity observed on this node
+	Confidence float64           // 0 means unset (treated as 1.0); range 0.0-1.0
+	Tags       []string          // plugin-applied tags
+	Source     string            // which adapter emitted it (nuclei, httpx, flaw, ...)
+	Detail     map[string]string // free-form metadata
+	SeenAt     time.Time
+	Hits       int
+}
+
+// Score returns a sortable priority: (severity+1) * confidence.
+// Confidence of 0 is treated as 1.0 (fully confident).
+func (n *Node) Score() float64 {
+	c := n.Confidence
+	if c <= 0 {
+		c = 1.0
+	}
+	return float64(n.Severity+1) * c
 }
 
 // Graph is a thread-safe node store.
 type Graph struct {
-	mu    sync.RWMutex
-	nodes map[string]*Node
+	mu       sync.RWMutex
+	nodes    map[string]*Node
+	OnUpsert func(*Node) // called after each Upsert, outside the lock
 }
 
 func New() *Graph {
@@ -80,18 +92,22 @@ func New() *Graph {
 // Upsert adds or merges a node. Severity is promoted (never demoted).
 func (g *Graph) Upsert(n Node) *Node {
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	if n.ID == "" {
+		g.mu.Unlock()
 		return nil
 	}
 	if n.SeenAt.IsZero() {
 		n.SeenAt = time.Now()
 	}
+	var result *Node
 	if existing, ok := g.nodes[n.ID]; ok {
 		existing.Hits++
 		existing.SeenAt = n.SeenAt
 		if n.Severity > existing.Severity {
 			existing.Severity = n.Severity
+		}
+		if n.Confidence > 0 {
+			existing.Confidence = n.Confidence
 		}
 		for _, t := range n.Tags {
 			if !contains(existing.Tags, t) {
@@ -104,12 +120,18 @@ func (g *Graph) Upsert(n Node) *Node {
 			}
 			existing.Detail[k] = v
 		}
-		return existing
+		result = existing
+	} else {
+		n.Hits = 1
+		cp := n
+		g.nodes[n.ID] = &cp
+		result = &cp
 	}
-	n.Hits = 1
-	cp := n
-	g.nodes[n.ID] = &cp
-	return &cp
+	g.mu.Unlock()
+	if g.OnUpsert != nil {
+		g.OnUpsert(result)
+	}
+	return result
 }
 
 func (g *Graph) Get(id string) (*Node, bool) {

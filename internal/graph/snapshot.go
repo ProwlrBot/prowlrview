@@ -38,3 +38,53 @@ func (g *Graph) Load(r io.Reader) error {
 	}
 	return nil
 }
+
+// DiffResult describes what changed between two graphs.
+type DiffResult struct {
+	Added   []*Node
+	Removed []*Node
+	Changed []*Node // severity promoted or label changed
+}
+
+// Diff compares two graphs and returns added/removed/changed nodes.
+func Diff(before, after *Graph) DiffResult {
+	before.mu.RLock()
+	after.mu.RLock()
+	defer before.mu.RUnlock()
+	defer after.mu.RUnlock()
+
+	var result DiffResult
+	// nodes in after but not in before, or changed
+	for id, an := range after.nodes {
+		bn, exists := before.nodes[id]
+		if !exists {
+			cp := *an
+			result.Added = append(result.Added, &cp)
+		} else if an.Severity != bn.Severity || an.Label != bn.Label {
+			cp := *an
+			result.Changed = append(result.Changed, &cp)
+		}
+	}
+	// nodes in before but not in after
+	for id, bn := range before.nodes {
+		if _, exists := after.nodes[id]; !exists {
+			cp := *bn
+			result.Removed = append(result.Removed, &cp)
+		}
+	}
+	sortNodes(result.Added)
+	sortNodes(result.Removed)
+	sortNodes(result.Changed)
+	return result
+}
+
+// LoadFromPath opens a snapshot file and replays it into a new Graph.
+func LoadFromPath(path string) (*Graph, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	g := New()
+	return g, g.Load(f)
+}

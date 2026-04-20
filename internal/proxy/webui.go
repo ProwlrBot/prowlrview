@@ -85,6 +85,45 @@ func ServeWeb(addr string, g *graph.Graph, store *FlowStore, logFn func(string))
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(stats)
 	})
+	mux.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "streaming not supported", http.StatusInternalServerError)
+			return
+		}
+		tick := time.NewTicker(2 * time.Second)
+		defer tick.Stop()
+		ctx := r.Context()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+				nodes := g.Nodes()
+				flows := store.Snapshot()
+				payload := map[string]any{
+					"nodes": len(nodes),
+					"flows": len(flows),
+					"findings": func() int {
+						n := 0
+						for _, nd := range nodes {
+							if nd.Kind == "finding" {
+								n++
+							}
+						}
+						return n
+					}(),
+				}
+				data, _ := json.Marshal(payload)
+				fmt.Fprintf(w, "data: %s\n\n", data)
+				flusher.Flush()
+			}
+		}
+	})
 	mux.HandleFunc("/ca.crt", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Disposition", `attachment; filename="prowlrview-ca.crt"`)
 		w.Header().Set("Content-Type", "application/x-x509-ca-cert")
@@ -205,29 +244,37 @@ configure your browser proxy → 127.0.0.1:8888</div>
     <div class="stats">
       <div class="stat ok"><div class="k">Flows</div><div class="v" id="s-flows">0</div></div>
       <div class="stat"><div class="k">Hosts</div><div class="v" id="s-hosts">0</div></div>
-      <div class="stat warn"><div class="k">4xx</div><div class="v" id="s-errors">0</div></div>
-      <div class="stat err"><div class="k">Blocked</div><div class="v" id="s-blocked">0</div></div>
+      <div class="stat warn"><div class="k">4xx / Nodes</div><div class="v" id="stat-nodes">0</div></div>
+      <div class="stat err"><div class="k">Findings</div><div class="v" id="stat-findings">0</div></div>
     </div>
     <h3>Top hosts</h3>
     <div class="hosts" id="hostlist"></div>
   </section>
 </main>
-<footer><span class="live"></span> auto-refresh 1s · proxy on :8888 · plugins fire on every flow</footer>
+<footer><span class="live"></span> live via SSE · proxy on :8888 · plugins fire on every flow</footer>
 <script>
 const fmt=t=>{const d=new Date(t);return d.toTimeString().slice(0,8)};
 const sizeFmt=n=>n<1024?n+'b':(n/1024).toFixed(1)+'k';
+
+// SSE: stat updates pushed from server every 2s
+const es = new EventSource('/events');
+es.onmessage = (e) => {
+  const d = JSON.parse(e.data);
+  document.getElementById('stat-nodes').textContent = d.nodes;
+  document.getElementById('stat-findings').textContent = d.findings;
+  document.getElementById('s-flows').textContent = d.flows;
+  document.getElementById('flows').textContent = d.flows;
+};
+
+// flow table: still polled via fetch for full row data
 async function tick(){
   const [flows, stats] = await Promise.all([
     fetch('/api/flows').then(r=>r.json()),
     fetch('/api/stats').then(r=>r.json()),
   ]);
-  document.getElementById('flows').textContent=stats.flows;
   document.getElementById('hosts').textContent=stats.hosts;
   document.getElementById('blocked').textContent=stats.blocked;
-  document.getElementById('s-flows').textContent=stats.flows;
   document.getElementById('s-hosts').textContent=stats.hosts;
-  document.getElementById('s-errors').textContent=stats.errors;
-  document.getElementById('s-blocked').textContent=stats.blocked;
 
   const tbody=document.getElementById('rows'), empty=document.getElementById('empty');
   if(!flows.length){empty.style.display='block';tbody.innerHTML='';return}
@@ -249,7 +296,7 @@ async function tick(){
     '<div class="host"><span>'+h+'</span><span class="n">'+n+'</span></div>').join('') ||
     '<div class="host"><span style="color:var(--dim)">no hosts yet</span><span></span></div>';
 }
-tick();setInterval(tick,1000);
+tick();setInterval(tick,2000);
 </script>
 </body>
 </html>`

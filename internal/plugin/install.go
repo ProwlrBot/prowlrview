@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -154,6 +155,74 @@ func PrintList(w io.Writer, entries []Entry) {
 		}
 		fmt.Fprintf(w, "    %s %-24s (%s)\n", flag, e.Name, e.Kind)
 	}
+}
+
+// ManifestEntry is a single plugin entry from manifest.json.
+type ManifestEntry struct {
+	Name        string   `json:"name"`
+	Category    string   `json:"category"`
+	Tags        []string `json:"tags"`
+	Description string   `json:"description"`
+}
+
+// Manifest is the top-level structure of manifest.json.
+type Manifest struct {
+	Version string          `json:"version"`
+	Updated string          `json:"updated"`
+	Plugins []ManifestEntry `json:"plugins"`
+}
+
+// LoadManifest reads manifest.json from the plugins repo.
+func LoadManifest() (*Manifest, error) {
+	repo, err := RepoPath()
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(filepath.Join(repo, "manifest.json"))
+	if err != nil {
+		return nil, fmt.Errorf("manifest not found (run: prowlrview plugin update): %w", err)
+	}
+	var m Manifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// SearchManifest returns entries whose name, category, or tags contain query (case-insensitive).
+func SearchManifest(query string) ([]ManifestEntry, error) {
+	m, err := LoadManifest()
+	if err != nil {
+		return nil, err
+	}
+	q := strings.ToLower(query)
+	var out []ManifestEntry
+	for _, e := range m.Plugins {
+		if strings.Contains(strings.ToLower(e.Name), q) ||
+			strings.Contains(strings.ToLower(e.Category), q) ||
+			strings.Contains(strings.ToLower(e.Description), q) {
+			out = append(out, e)
+			continue
+		}
+		for _, t := range e.Tags {
+			if strings.Contains(strings.ToLower(t), q) {
+				out = append(out, e)
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+// UpdateRepo runs `git pull` on the plugins repo.
+func UpdateRepo() error {
+	repo, err := RepoPath()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command("git", "-C", repo, "pull", "--ff-only")
+	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
+	return cmd.Run()
 }
 
 func exists(p string) bool {

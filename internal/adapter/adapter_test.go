@@ -74,3 +74,70 @@ func TestSeverityPromotion(t *testing.T) {
 		t.Fatalf("severity should promote to critical, got %+v", fs)
 	}
 }
+
+func TestDalfox(t *testing.T) {
+	g := graph.New()
+	ParseLine([]byte(`{"type":"R","data":"https://vuln.example.com/search?q=1","injectedValue":"<script>","evidence":"XSS confirmed"}`), g)
+	host, ok := g.Get("vuln.example.com")
+	if !ok || host.Kind != "host" {
+		t.Fatal("missing host node")
+	}
+	ep, ok := g.Get("https://vuln.example.com/search?q=1")
+	if !ok || ep.Kind != "endpoint" {
+		t.Fatal("missing endpoint node")
+	}
+	fs := g.Findings()
+	if len(fs) != 1 {
+		t.Fatalf("want 1 finding, got %d", len(fs))
+	}
+	if fs[0].Severity != graph.SevHigh {
+		t.Fatalf("want high severity, got %v", fs[0].Severity)
+	}
+	if fs[0].Detail["rule"] != "xss" {
+		t.Fatalf("want rule=xss, got %q", fs[0].Detail["rule"])
+	}
+}
+
+func TestGau(t *testing.T) {
+	g := graph.New()
+	ParseLine([]byte(`{"url":"https://example.com/path"}`), g)
+	host, ok := g.Get("example.com")
+	if !ok || host.Kind != "host" {
+		t.Fatal("missing host node")
+	}
+	ep, ok := g.Get("https://example.com/path")
+	if !ok || ep.Kind != "endpoint" {
+		t.Fatal("missing endpoint node")
+	}
+}
+
+func TestWaybackURLs(t *testing.T) {
+	g := graph.New()
+	ParseLine([]byte("https://example.com/old-path"), g)
+	host, ok := g.Get("example.com")
+	if !ok || host.Kind != "host" {
+		t.Fatal("missing host node")
+	}
+	ep, ok := g.Get("https://example.com/old-path")
+	if !ok || ep.Kind != "endpoint" {
+		t.Fatal("missing endpoint node")
+	}
+}
+
+func TestKatanaReferrer(t *testing.T) {
+	g := graph.New()
+	ParseLine([]byte(`{"endpoint":"https://target.com/page","request_url":"https://target.com/"}`), g)
+	// endpoint should be parented to the referrer
+	ep, ok := g.Get("https://target.com/page")
+	if !ok || ep.Kind != "endpoint" {
+		t.Fatal("missing endpoint node")
+	}
+	if ep.Parent != "https://target.com/" {
+		t.Fatalf("want parent=https://target.com/, got %q", ep.Parent)
+	}
+	// referrer itself should exist
+	ref, ok := g.Get("https://target.com/")
+	if !ok || ref.Kind != "endpoint" {
+		t.Fatal("missing referrer endpoint node")
+	}
+}

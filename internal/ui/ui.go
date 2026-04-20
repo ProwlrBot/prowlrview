@@ -3,6 +3,7 @@ package ui
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -16,7 +17,9 @@ import (
 	"github.com/ProwlrBot/prowlrview/internal/graph"
 	"github.com/ProwlrBot/prowlrview/internal/plugin"
 	"github.com/ProwlrBot/prowlrview/internal/proxy"
+	"github.com/ProwlrBot/prowlrview/internal/session"
 	"github.com/ProwlrBot/prowlrview/internal/theme"
+	"github.com/fsnotify/fsnotify"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -34,20 +37,22 @@ func (s SortMode) String() string {
 }
 
 type app struct {
-	tv      *tview.Application
-	g       *graph.Graph
-	theme   *theme.Theme
-	themes  map[string]*theme.Theme
-	names   []string
-	tree    *tview.TreeView
-	findTbl *tview.Table
-	flowTbl *tview.Table
-	detail  *tview.TextView
-	status  *tview.TextView
-	logView *tview.TextView
-	filterI *tview.InputField
-	root    *tview.Flex
-	pages   *tview.Pages
+	tv        *tview.Application
+	g         *graph.Graph
+	theme     *theme.Theme
+	themes    map[string]*theme.Theme
+	names     []string
+	tree      *tview.TreeView
+	findTbl   *tview.Table
+	flowTbl   *tview.Table
+	detail    *tview.TextView
+	status    *tview.TextView
+	logView   *tview.TextView
+	filterI   *tview.InputField
+	root      *tview.Flex
+	pages     *tview.Pages
+	graphPane *graphView
+	showGraph bool
 
 	plugin *plugin.Host
 	store  *proxy.FlowStore
@@ -61,6 +66,9 @@ type app struct {
 // RunPipe reads JSONL from r and renders live.
 func RunPipe(r io.Reader) error {
 	a := newApp()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go a.plugin.Watch(ctx)
 	go a.ingestReader(r)
 	go a.refreshLoop()
 	go a.tickLoop()
@@ -71,7 +79,10 @@ func RunPipe(r io.Reader) error {
 // RunWatch tails *.jsonl / *.json / *.sarif in dir.
 func RunWatch(dir string) error {
 	a := newApp()
-	go a.ingestDir(dir)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go a.plugin.Watch(ctx)
+	go a.ingestDir(ctx, dir)
 	go a.refreshLoop()
 	go a.tickLoop()
 	defer a.plugin.Close()
@@ -82,6 +93,9 @@ func RunWatch(dir string) error {
 // If webAddr != "", also serves the HTML dashboard on that port.
 func RunProxy(addr, webAddr string) error {
 	a := newApp()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go a.plugin.Watch(ctx)
 	a.store = proxy.NewFlowStore(2000)
 	a.attachFlowPane()
 	a.setStatus("proxy on " + addr + " · point browser at 127.0.0.1" + addr + " · ? for keys")
@@ -108,6 +122,9 @@ func RunProxy(addr, webAddr string) error {
 // RunReplay loads a snapshot file and renders (no live updates).
 func RunReplay(path string) error {
 	a := newApp()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go a.plugin.Watch(ctx)
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -141,12 +158,23 @@ func newApp() *app {
 		follow: true,
 		sort:   SortBySeverity,
 	}
+
+	// load active session snapshot if present
+	if name := session.Active(); name != "" {
+		snapPath := session.SnapshotPath(name)
+		if f, err := os.Open(snapPath); err == nil {
+			_ = a.g.Load(f)
+			f.Close()
+		}
+	}
+
 	a.buildUI()
 
 	a.plugin = plugin.NewHost(a.g, func(s string) { a.logf("%s", s) }, a.notify)
 	if err := a.plugin.LoadDir(plugin.UserPluginDir()); err != nil {
 		a.logf("plugin dir: %v", err)
 	}
+	a.g.OnUpsert = a.plugin.NodeObserver()
 	return a
 }
 
@@ -202,6 +230,13 @@ func (a *app) buildUI() {
 		AddItem(a.status, 1, 0, false)
 
 	a.pages = tview.NewPages().AddPage("main", a.root, true, true)
+
+	a.graphPane = newGraphView(a.g, t)
+	graphLayout := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(a.graphPane, 0, 1, true).
+		AddItem(a.status, 1, 0, false)
+	a.pages.AddPage("graph", graphLayout, true, false)
+
 	a.tv.SetRoot(a.pages, true).EnableMouse(true)
 
 	a.bindKeys()
@@ -253,10 +288,24 @@ func (a *app) bindKeys() {
 			a.exportMenu()
 			return nil
 		case 'r':
+			a.plugin.Reload()
 			a.refresh()
 			return nil
 		case '?':
 			a.showHelp()
+			return nil
+		case 'g':
+			a.showGraph = !a.showGraph
+			if a.showGraph {
+				a.setStatus("graph view · g to toggle back")
+				a.pages.ShowPage("graph")
+				a.pages.HidePage("main")
+				a.tv.SetFocus(a.graphPane)
+			} else {
+				a.pages.ShowPage("main")
+				a.pages.HidePage("graph")
+				a.tv.SetFocus(a.tree)
+			}
 			return nil
 		}
 		return e
@@ -315,6 +364,7 @@ func (a *app) showHelp() {
   s           cycle sort (severity → recent → alpha)
   /           focus filter  (esc/enter returns)
   e           export menu (dot / mermaid / canvas / snapshot)
+  g           toggle graph view (DAG visualization)
   r           refresh
   ?           this help
 
@@ -619,42 +669,74 @@ func (a *app) ingestReader(r io.Reader) {
 	a.logf("ingest: eof")
 }
 
-func (a *app) ingestDir(dir string) {
+func (a *app) ingestDir(ctx context.Context, dir string) {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		a.logf("watch: fsnotify: %v", err)
+		return
+	}
+	defer watcher.Close()
+	if err := watcher.Add(dir); err != nil {
+		a.logf("watch: add %s: %v", dir, err)
+		return
+	}
+	a.logf("watch: inotify on %s", dir)
 	offsets := map[string]int64{}
+
+	ingestFile := func(path string) {
+		info, err := os.Stat(path)
+		if err != nil || info.Size() <= offsets[path] {
+			return
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return
+		}
+		defer f.Close()
+		if _, err := f.Seek(offsets[path], io.SeekStart); err != nil {
+			return
+		}
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+		for sc.Scan() {
+			adapter.ParseLine(sc.Bytes(), a.g)
+		}
+		offsets[path] = info.Size()
+	}
+
+	// do an initial sweep of existing files
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		n := e.Name()
+		if strings.HasSuffix(n, ".jsonl") || strings.HasSuffix(n, ".json") || strings.HasSuffix(n, ".sarif") {
+			ingestFile(filepath.Join(dir, n))
+		}
+	}
+
 	for {
-		entries, _ := os.ReadDir(dir)
-		for _, e := range entries {
-			if e.IsDir() {
-				continue
+		select {
+		case <-ctx.Done():
+			return
+		case event, ok := <-watcher.Events:
+			if !ok {
+				return
 			}
-			n := e.Name()
+			n := event.Name
 			if !(strings.HasSuffix(n, ".jsonl") || strings.HasSuffix(n, ".json") || strings.HasSuffix(n, ".sarif")) {
 				continue
 			}
-			p := filepath.Join(dir, n)
-			info, err := os.Stat(p)
-			if err != nil {
-				continue
+			if event.Op&fsnotify.Write != 0 || event.Op&fsnotify.Create != 0 {
+				ingestFile(n)
 			}
-			last := offsets[p]
-			if info.Size() <= last {
-				continue
+		case err, ok := <-watcher.Errors:
+			if !ok {
+				return
 			}
-			f, err := os.Open(p)
-			if err != nil {
-				continue
-			}
-			if _, err := f.Seek(last, io.SeekStart); err == nil {
-				sc := bufio.NewScanner(f)
-				sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
-				for sc.Scan() {
-					adapter.ParseLine(sc.Bytes(), a.g)
-				}
-			}
-			offsets[p] = info.Size()
-			f.Close()
+			a.logf("watch: %v", err)
 		}
-		time.Sleep(1 * time.Second)
 	}
 }
 
