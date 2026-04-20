@@ -1,0 +1,26 @@
+{
+  "abi_version": "1",
+  "export": "prowlrview_handle",
+  "optional_exports": ["prowlrview_alloc", "prowlrview_free"],
+  "event": {
+    "kind": "string (request|response|finding|node|tick)",
+    "payload": {
+      "id": "string",
+      "kind": "string",
+      "label": "string",
+      "parent": "string",
+      "severity": "string (info|low|medium|high|critical)",
+      "source": "string",
+      "url": "string (response/request events)",
+      "method": "string (request events)",
+      "status": "number (response events)",
+      "body": "string (response events, truncated at 64KB)"
+    }
+  },
+  "result": {
+    "block": "bool (request events only)",
+    "reason": "string",
+    "notify": "string (shown in TUI status bar)",
+    "log": "string (shown in TUI log pane)"
+  }
+}

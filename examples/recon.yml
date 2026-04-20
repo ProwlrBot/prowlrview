@@ -1,0 +1,15 @@
+name: full-recon
+target: example.com
+
+stages:
+  - name: subdomain-enum
+    run: subfinder -d {{target}} -silent -oJ
+    output: subs-{{target}}.jsonl
+
+  - name: live-check
+    run: httpx -json -silent -l subs-{{target}}.jsonl
+
+  - name: crawl-and-nuclei
+    parallel:
+      - katana -jsonl -u https://{{target}}
+      - nuclei -jsonl -target https://{{target}} -severity medium,high,critical
